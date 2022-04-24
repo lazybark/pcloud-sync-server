@@ -27,6 +27,7 @@ type (
 		ID             uint   `gorm:"primaryKey"`
 		Token          string `gorm:"unique"`
 		Label          string
+		DeviceName     string
 		RestrictIp     string
 		UserId         uint
 		TokenIssuedAt  time.Time
@@ -41,10 +42,12 @@ type (
 
 const (
 	roles_beg UserRole = iota
+
 	UserRoleBanned
 	UserRoleRegular
 	UserRoleAdmin
 	UserRoleSuper
+
 	roles_end
 )
 

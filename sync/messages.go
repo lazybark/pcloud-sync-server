@@ -8,7 +8,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/lazybark/pcloud-sync-server/models"
 	"github.com/lazybark/pcloud-sync-server/users"
 	"gorm.io/gorm"
 )
@@ -46,8 +45,8 @@ type (
 	}
 
 	Filesystem struct {
-		Folders []models.SyncFolder
-		Files   []models.SyncFile
+		Folders []Folder
+		Files   []File
 	}
 
 	SyncFileData struct {
@@ -236,12 +235,12 @@ func (m *Message) ProcessFullAuth(c *net.Conn, db *gorm.DB) (newToken string, er
 	if !ok {
 		return "", fmt.Errorf("wrong credentials")
 	}
-
+	// Token for the client
 	newToken, err = users.GenerateToken()
 	if err != nil {
 		return
 	}
-
+	// Add token into DB
 	err = users.RegisterToken(userId, newToken, db)
 	if err != nil {
 		return
