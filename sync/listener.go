@@ -1,10 +1,13 @@
 package sync
 
 import (
+	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -36,7 +39,7 @@ func (s *Server) Listen() {
 			s.Logger.Error("Error accepting connection: ", err)
 		}
 		if s.Config.ServerVerboseLogging {
-			s.Logger.Info(conn.RemoteAddr(), " - new connection. Active: ", len(s.ActiveConnections)+1)
+			s.Logger.Info(conn.RemoteAddr(), " - new connection. Active: ", s.ActiveConnectionsNumber+1)
 		}
 
 		go func(c net.Conn) {
@@ -45,18 +48,180 @@ func (s *Server) Listen() {
 			connection := ActiveConnection{
 				EventsChan: eventsChannel,
 				IP:         c.RemoteAddr(),
-				Closed:     connClosedChannel,
+				ConnectAt:  time.Now(),
+				ClosedChan: connClosedChannel,
 			}
 			s.ChannelMutex.Lock()
+			connection.NumerInPool = len(s.ActiveConnections)
 			s.ActiveConnections = append(s.ActiveConnections, connection)
+			s.ActiveConnectionsNumber++
 			s.ChannelMutex.Unlock()
 
 			var message Message
 			var response Message
-			var recievedBytes int
-			var bytesSent int
+			var recievedBytes uint
+			//var bytesSent int
 
-			recievedBytes, err := message.Read(c)
+			for {
+				netData, err := bufio.NewReader(c).ReadBytes(MessageTerminator)
+				if err != nil {
+					s.Logger.Error(conn.RemoteAddr(), " - error reading data: ", err)
+
+					// If connection closed - break the cycle
+					if errors.As(err, &io.ErrClosedPipe) {
+						break
+					}
+					continue
+					/*if neterr, ok := err.(net.Error); ok {
+						fmt.Println("SSSasdasdasdS", neterr)
+						fmt.Printf("%T %+v", err, err)
+						break // connection will be closed
+					}*/
+
+				}
+
+				//d := []byte(`{"Type":2,"Payload":"eyJMb2dpbiI6ImxvZ2luIiwiUGFzc3dvcmQiOiJwYXNzd29yZCJ9Cg=="}`)
+
+				err = message.Parse(&netData) //json.Unmarshal(netData, &message)
+				if err != nil {
+					s.Logger.Error(conn.RemoteAddr(), " - broken message: ", err)
+					continue
+				}
+
+				fmt.Println("client read:", string(netData))
+				fmt.Println("client read:", message)
+
+				if message.Type == MessageAuth {
+					newToken, err := message.ProcessFullAuth(&conn, s.DB)
+					if err != nil {
+						s.Logger.Error(conn.RemoteAddr(), " - error parsing auth: ", err)
+
+						bytesSent, err := response.ReturnError(&conn, ErrInternal)
+						if err != nil {
+							s.Logger.Error(conn.RemoteAddr(), " - error making response: ", err)
+							if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
+								s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
+							}
+							continue
+						}
+						if s.Config.CountStats {
+							fmt.Println(bytesSent)
+						}
+						if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
+							s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
+						}
+					}
+
+					if newToken == "" {
+						s.Logger.Warn(conn.RemoteAddr(), " - wrong auth")
+
+						bytesSent, err := response.ReturnError(&conn, ErrAccessDenied)
+						if err != nil {
+							s.Logger.Error(conn.RemoteAddr(), " - error making response: ", err)
+							if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
+								s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
+							}
+							continue
+						}
+						if s.Config.CountStats {
+							fmt.Println(bytesSent)
+						}
+						if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
+							s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
+						}
+					}
+					/*
+
+
+
+						// Return token to client
+						bytesSent, err := response.ReturnToken(&conn, newToken)
+						if err != nil {
+							s.Logger.Error(conn.RemoteAddr(), " - error making response: ", err)
+							if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
+								s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
+							}
+							return
+						}
+						if s.Config.CountStats {
+							fmt.Println(bytesSent)
+						}
+						if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
+							s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
+						}*/
+
+					if !s.ActiveConnections[connection.NumerInPool].SyncActive {
+						go func() {
+							s.ChannelMutex.Lock()
+							s.ActiveConnections[connection.NumerInPool].SyncActive = true
+							s.ChannelMutex.Unlock()
+							for {
+								select {
+								case event, ok := <-eventsChannel:
+									if !ok {
+										io.WriteString(c, "Channel closed")
+										return
+									}
+									fmt.Println("Sending to client")
+									io.WriteString(c, fmt.Sprintf("%s %s", event.Name, event.Op))
+
+								case closing, ok := <-connClosedChannel:
+									if !ok {
+										io.WriteString(c, "Channel closed")
+										return
+									}
+									if closing {
+										fmt.Println("Connection closing")
+										io.WriteString(c, "Connection closing")
+										// Close connection in pool, so we can trash it
+										s.ChannelMutex.Lock()
+										s.ActiveConnections[connection.NumerInPool].SyncActive = false
+										s.ChannelMutex.Unlock()
+										return
+									}
+								}
+							}
+						}()
+					}
+				} else if message.Type == MessageOK {
+					ok, err := message.ValidateOK()
+					if err != nil {
+						s.Logger.Error(conn.RemoteAddr(), " - error parsing OK: ", err)
+
+						bytesSent, err := response.ReturnError(&conn, ErrBrokenMessage)
+						if err != nil {
+							s.Logger.Error(conn.RemoteAddr(), " - error making response: ", err)
+							if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
+								s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
+							}
+						}
+						continue
+
+					}
+					if !ok.OK {
+						s.Logger.Warn(conn.RemoteAddr(), " - client sent error: ", ok.HumanReadable)
+						continue
+					}
+
+				}
+
+			}
+
+			//time.Sleep(1 * time.Second)
+			// Closing the sync routine
+			connClosedChannel <- true
+
+			if s.Config.CountStats {
+				fmt.Println(recievedBytes)
+			}
+			return
+
+			/*temp := strings.TrimSpace(string(netData))
+			if temp == ConnectionCloser {
+				return
+			}*/
+
+			/*recievedBytes, err := message.Read(c)
 			if err != nil {
 				s.Logger.Error(conn.RemoteAddr(), " - error reading data: ", err)
 
@@ -74,12 +239,15 @@ func (s *Server) Listen() {
 				}
 			}
 
-			if s.Config.CountStats {
-				fmt.Println(recievedBytes)
-			}
+			fmt.Println(message)
+			io.WriteString(c, "string(some response)")
+
+			if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
+				s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
+			}*/
 
 			// Process authorization
-			if message.Type == MessageAuth {
+			/*if message.Type == MessageAuth {
 				newToken, err := message.ProcessFullAuth(&conn, s.DB)
 				if err != nil {
 					s.Logger.Error(conn.RemoteAddr(), " - error parsing auth: ", err)
@@ -139,7 +307,7 @@ func (s *Server) Listen() {
 
 				/*	for event := (<-s.ConnNotifier); event.Name != ""; {
 					io.WriteString(c, fmt.Sprintf("%s %s", event.Name, event.Op))
-				}*/
+				}
 				for {
 					select {
 					case event, ok := <-eventsChannel:
@@ -156,7 +324,7 @@ func (s *Server) Listen() {
 									io.WriteString(c, "Channel closed")
 									return
 								}
-								s.Logger.Error("FS watcher error: ", err)*/
+								s.Logger.Error("FS watcher error: ", err)
 
 					default:
 						// Persist connection
@@ -170,15 +338,7 @@ func (s *Server) Listen() {
 				// Вернуть список изменений с момента последнего подключения этого клиента
 				// Если папка была создана после этого момента - вернуть всю папку
 
-			}
-
-			fmt.Println(message)
-
-			io.WriteString(c, "string(response)")
-
-			if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
-				s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
-			}
+			}*/
 
 			// Logging for debug and stats
 

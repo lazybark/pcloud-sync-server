@@ -10,24 +10,37 @@ import (
 	"gorm.io/gorm"
 )
 
+var (
+	MessageTerminator = byte('\n')
+	ConnectionCloser  = "CLOSE_CONNECTION"
+)
+
 type (
 	Server struct {
-		ChannelMutex      sync.RWMutex
-		Config            *Config
-		AppVersion        string
-		Logger            *logs.Logger
-		Watcher           *fsnotify.Watcher
-		DB                *gorm.DB
-		TimeStart         time.Time
-		ConnNotifier      chan (fsnotify.Event)
-		ActiveConnections []ActiveConnection
+		ChannelMutex            sync.RWMutex
+		Config                  *Config
+		AppVersion              string
+		Logger                  *logs.Logger
+		Watcher                 *fsnotify.Watcher
+		DB                      *gorm.DB
+		TimeStart               time.Time
+		ConnNotifier            chan (fsnotify.Event)
+		ActiveConnections       []ActiveConnection
+		ActiveConnectionsNumber int
 	}
 
 	ActiveConnection struct {
-		EventsChan chan (fsnotify.Event)
-		IP         net.Addr
-		DeviceName string
-		Closed     chan (bool)
+		EventsChan     chan (fsnotify.Event)
+		IP             net.Addr
+		DeviceName     string
+		ClientErrors   uint
+		ServerErrors   uint
+		NumerInPool    int
+		ConnectAt      time.Time
+		LastOperation  time.Time
+		DisconnectedAt time.Time
+		ClosedChan     chan (bool) // Channel for closing the sync routine
+		SyncActive     bool        // If the client has been authed and has an active sync messages channel
 	}
 
 	// Config is a struct to define server behaviour
@@ -37,6 +50,8 @@ type (
 		KeyPath                  string `mapstructure:"KEY_PATH"`
 		HostName                 string `mapstructure:"HOST_NAME"`
 		Port                     string `mapstructure:"PORT"`
+		LogStats                 bool
+		CollectStats             bool
 		ServerVerboseLogging     bool   `mapstructure:"SERVER_VERBOSE_LOGGING"`
 		CountStats               bool   `mapstructure:"COUNT_STATS"`
 		FilesystemVerboseLogging bool   `mapstructure:"FILESYSTEM_VERBOSE_LOGGING"`

@@ -35,6 +35,9 @@ func (s *Server) Start() {
 	s.Logger = logger
 
 	s.Logger.InfoCyan("App Version: ", s.AppVersion)
+	if s.Config.LogStats {
+		go s.LogStats()
+	}
 
 	// Connect DB
 	s.OpenSQLite()
@@ -74,6 +77,7 @@ func (s *Server) Start() {
 
 func (s *Server) ConnectionsPool() {
 	s.Logger.InfoCyan("Connectios pool started")
+	// Endless await
 	for {
 		select {
 		case event, ok := <-s.ConnNotifier:
@@ -81,6 +85,9 @@ func (s *Server) ConnectionsPool() {
 				return
 			}
 			for _, c := range s.ActiveConnections {
+				if !c.SyncActive { // Only share data with connections that are intended to sync
+					continue
+				}
 				c.EventsChan <- event
 				fmt.Println("Event sent")
 			}
@@ -108,4 +115,11 @@ func (s *Server) LoadConfig(path string) (err error) {
 	}
 
 	return
+}
+
+func (s *Server) LogStats() {
+	for {
+		time.Sleep(5 * time.Minute)
+		s.Logger.InfoMagenta("Server stats: \n - active users = 0\n - active connections = 0\n - data recieved = 0 Gb\n - data sent = 0 Gb\n - errors last 15 min / hour / 24 hours = 0/0/0")
+	}
 }

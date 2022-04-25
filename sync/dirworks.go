@@ -64,10 +64,10 @@ func (s *Server) ScanDir(path string, dirs *[]Folder, files *[]File) (err error)
 
 // StoreDirData fills DB with file and dir data provided
 func (s *Server) StoreDirData(dirs *[]Folder, files *[]File) (err error) {
-	if err = s.DB.Table("sync_folders").Save(dirs).Error; err != nil && err != gorm.ErrEmptySlice {
+	if err = s.DB.Model(&Folder{}).Save(dirs).Error; err != nil && err != gorm.ErrEmptySlice {
 		return
 	}
-	if err = s.DB.Table("sync_files").Save(files).Error; err != nil && err != gorm.ErrEmptySlice {
+	if err = s.DB.Model(&File{}).Save(files).Error; err != nil && err != gorm.ErrEmptySlice {
 		return
 	}
 

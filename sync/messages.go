@@ -32,6 +32,11 @@ type (
 		Token     string
 	}
 
+	OK struct {
+		OK            bool
+		HumanReadable string
+	}
+
 	DirSyncReq struct {
 		Token      string
 		Root       string // Directory path that needs to be synced
@@ -77,16 +82,30 @@ const (
 	messages_start MessageType = iota
 
 	MessageError
-	MessageAuth        // Request for token by login & password
-	MessageToken       // Response with newly generated token for client
-	MessageDirSyncReq  // Request for filelist (client -> server) with own filelist in specific dir
-	MessageDirSyncResp // Response from server with filelist (server -> client) and list of files to upload on server in specific dir
-	MessageGetFile     // Request to get []bytes of specific file (client -> server)
-	MessageSendFile    // Response with []bytes of specific file (client <-> server)
+	MessageAuth          // Request for token by login & password
+	MessageToken         // Response with newly generated token for client
+	MessageDirSyncReq    // Request for filelist (client -> server) with own filelist in specific dir
+	MessageDirSyncResp   // Response from server with filelist (server -> client) and list of files to upload on server in specific dir
+	MessageGetFile       // Request to get []bytes of specific file (client -> server)
+	MessageSendFile      // Response with []bytes of specific file (client <-> server)
+	MessageConnectionEnd // Message to close connetion (client <-> server)
+	MessageOK            // The other side correctly understood previous message OR not (client <-> server)
 
 	messages_end
 )
 
+func (m MessageType) String() string {
+	return [...]string{"", "Error", "Authorization", "New token", "MessageDirSyncReq", "MessageDirSyncResp", "MessageGetFile", "MessageSendFile", "MessageConnectionEnd", "OK", ""}[m]
+}
+
+func (m *Message) CheckType() bool {
+	if messages_start < m.Type && m.Type < messages_end {
+		return true
+	}
+	return false
+}
+
+/*
 func (m *Message) Read(c net.Conn) (recievedBytes int, err error) {
 	buf := make([]byte, 256)
 	var n int
@@ -113,18 +132,7 @@ func (m *Message) Read(c net.Conn) (recievedBytes int, err error) {
 	}
 
 	return
-}
-
-func (m MessageType) String() string {
-	return [...]string{"Error", "Authorization"}[m]
-}
-
-func (m *Message) CheckType() bool {
-	if messages_start < m.Type && m.Type < messages_end {
-		return true
-	}
-	return false
-}
+}*/
 
 // Parse decodes incoming byte slice into sync.Message struct
 func (m *Message) Parse(bytes *[]byte) error {
@@ -207,7 +215,6 @@ func (m *Message) ReturnToken(c *net.Conn, token string) (bytesSent int, err err
 }
 
 func (m *Message) Send(c *net.Conn) (bytesSent int, err error) {
-
 	response, err := json.Marshal(*m)
 	if err != nil {
 		return
@@ -251,5 +258,24 @@ func (m *Message) ProcessFullAuth(c *net.Conn, db *gorm.DB) (newToken string, er
 
 func (m *Message) ValidateAuth() (auth *Auth, err error) {
 	err = json.Unmarshal(m.Payload, &auth)
+	if err != nil {
+		return
+	}
+	if auth == nil {
+		err = fmt.Errorf("broken message")
+		return
+	}
+	return
+}
+
+func (m *Message) ValidateOK() (ok *OK, err error) {
+	err = json.Unmarshal(m.Payload, &ok)
+	if err != nil {
+		return
+	}
+	if ok == nil {
+		err = fmt.Errorf("broken message")
+		return
+	}
 	return
 }

@@ -28,7 +28,7 @@ const (
 
 // String() returns human-readable name of error code
 func (e ErrorType) String() string {
-	return [...]string{"Broken message", "Unknown message type", "Access denied", "Sync app internal error"}[e]
+	return [...]string{"", "Broken message", "Unknown message type", "Access denied", "Sync app internal error", ""}[e]
 }
 
 // CheckErrorType() checks error code for consistency

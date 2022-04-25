@@ -56,7 +56,7 @@ func (s *Server) MakeDBRecord(item fs.FileInfo, path string) error {
 			Size:        item.Size(),
 			FSUpdatedAt: item.ModTime(),
 		}
-		if err := s.DB.Table("sync_folders").Save(&record).Error; err != nil && err != gorm.ErrEmptySlice {
+		if err := s.DB.Model(&Folder{}).Save(&record).Error; err != nil && err != gorm.ErrEmptySlice {
 			return err
 		}
 	} else {
@@ -74,7 +74,7 @@ func (s *Server) MakeDBRecord(item fs.FileInfo, path string) error {
 			FSUpdatedAt: item.ModTime(),
 			Type:        filepath.Ext(item.Name()),
 		}
-		if err = s.DB.Table("sync_files").Save(&record).Error; err != nil && err != gorm.ErrEmptySlice {
+		if err = s.DB.Model(&File{}).Save(&record).Error; err != nil && err != gorm.ErrEmptySlice {
 			return err
 		}
 	}

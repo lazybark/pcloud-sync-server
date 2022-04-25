@@ -22,12 +22,12 @@ func (s *Server) FilesystemWatcherRoutine() {
 				if !ok {
 					return
 				}
-				if s.Config.FilesystemVerboseLogging {
-					s.Logger.Info(fmt.Sprintf("%s %s", event.Name, event.Op))
-				}
+
 				select {
 				case s.ConnNotifier <- event:
-					fmt.Println("sent")
+					if s.Config.FilesystemVerboseLogging {
+						s.Logger.Info(fmt.Sprintf("%s %s", event.Name, event.Op))
+					}
 				default:
 
 				}
@@ -77,7 +77,7 @@ func (s *Server) FilesystemWatcherRoutine() {
 						} else {
 							// Update data in DB
 							folder.FSUpdatedAt = dat.ModTime()
-							if err := s.DB.Table("sync_folders").Save(&folder).Error; err != nil && err != gorm.ErrEmptySlice {
+							if err := s.DB.Table("folders").Save(&folder).Error; err != nil && err != gorm.ErrEmptySlice {
 								s.Logger.Error("Dir saving failed: ", err)
 							}
 						}
@@ -95,7 +95,7 @@ func (s *Server) FilesystemWatcherRoutine() {
 							file.FSUpdatedAt = dat.ModTime()
 							file.Size = dat.Size()
 							file.Hash = hash
-							if err := s.DB.Table("sync_files").Save(&file).Error; err != nil && err != gorm.ErrEmptySlice {
+							if err := s.DB.Table("files").Save(&file).Error; err != nil && err != gorm.ErrEmptySlice {
 								s.Logger.Error("Dir saving failed: ", err)
 							}
 						}
