@@ -18,18 +18,22 @@ type (
 
 	// Message is the model for base sync message
 	Message struct {
-		Type    MessageType
-		Payload []byte
+		Type      MessageType
+		Token     string
+		Timestamp time.Time
+		Payload   []byte
 	}
 
 	Auth struct {
-		Login    string
-		Password string
+		Login      string
+		Password   string
+		DeviceName string
+		Label      string
+		RestrictIP bool
 	}
 
 	Token struct {
-		Timestamp time.Time
-		Token     string
+		Token string
 	}
 
 	OK struct {
@@ -90,12 +94,14 @@ const (
 	MessageSendFile      // Response with []bytes of specific file (client <-> server)
 	MessageConnectionEnd // Message to close connetion (client <-> server)
 	MessageOK            // The other side correctly understood previous message OR not (client <-> server)
+	MessageStartSync     // The other party is ready to recieve filesystem events
+	MessageEndSync       // The other side doesn't need filesystem events anymore
 
 	messages_end
 )
 
 func (m MessageType) String() string {
-	return [...]string{"", "Error", "Authorization", "New token", "MessageDirSyncReq", "MessageDirSyncResp", "MessageGetFile", "MessageSendFile", "MessageConnectionEnd", "OK", ""}[m]
+	return [...]string{"", "Error", "Authorization", "New token", "MessageDirSyncReq", "MessageDirSyncResp", "MessageGetFile", "MessageSendFile", "MessageConnectionEnd", "OK", "MessageStartSync", "MessageEndSync", ""}[m]
 }
 
 func (m *Message) CheckType() bool {
@@ -153,7 +159,6 @@ func (m *Message) MakeError(e ErrorType) error {
 		return fmt.Errorf("incorrect err type")
 	}
 	errorPayload := Error{
-		Timestamp:     time.Now(),
 		Type:          e,
 		HumanReadable: e.String(),
 	}
@@ -175,6 +180,9 @@ func (m *Message) ReturnError(c *net.Conn, e ErrorType) (bytesSent int, err erro
 	if err != nil {
 		return
 	}
+
+	m.Timestamp = time.Now()
+
 	bytesSent, err = m.Send(c)
 	if err != nil {
 		return
@@ -185,8 +193,7 @@ func (m *Message) ReturnError(c *net.Conn, e ErrorType) (bytesSent int, err erro
 
 func (m *Message) MakeToken(t string) error {
 	payload := Token{
-		Timestamp: time.Now(),
-		Token:     t,
+		Token: t,
 	}
 
 	b := new(bytes.Buffer)
@@ -195,7 +202,6 @@ func (m *Message) MakeToken(t string) error {
 		return err
 	}
 
-	m.Type = MessageToken
 	m.Payload = b.Bytes()
 
 	return nil
@@ -206,9 +212,31 @@ func (m *Message) ReturnToken(c *net.Conn, token string) (bytesSent int, err err
 	if err != nil {
 		return
 	}
+
+	m.Type = MessageToken
+	m.Timestamp = time.Now()
+
 	bytesSent, err = m.Send(c)
 	if err != nil {
 		return
+	}
+
+	return
+}
+
+// ReturnInfoMessage sends message with any MessageType specified and empty Payload field
+func (m *Message) ReturnInfoMessage(c *net.Conn, token string, t MessageType) (bytesSent int, err error) {
+
+	m.Type = t
+
+	ok := m.CheckType()
+	if !ok {
+		return bytesSent, fmt.Errorf("[ReturnInfoMessage] wrong MessageType")
+	}
+
+	bytesSent, err = m.Send(c)
+	if err != nil {
+		return bytesSent, fmt.Errorf("[ReturnInfoMessage] error sending message -> %v", err)
 	}
 
 	return
@@ -228,29 +256,29 @@ func (m *Message) Send(c *net.Conn) (bytesSent int, err error) {
 	return
 }
 
-func (m *Message) ProcessFullAuth(c *net.Conn, db *gorm.DB) (newToken string, err error) {
+func (m *Message) ProcessFullAuth(c *net.Conn, db *gorm.DB, tokenValidDays int) (newToken string, err error) {
 	// Parse payload
 	auth, err := m.ValidateAuth()
 	if err != nil {
-		return
+		return newToken, fmt.Errorf("[ValidateAuth] error validating -> %w", err)
 	}
 	// Check credentials
 	ok, userId, err := users.ValidateCreds(auth.Login, auth.Password, db)
 	if err != nil {
-		return
+		return newToken, fmt.Errorf("[ValidateCreds] error validating -> %w", err)
 	}
 	if !ok {
-		return "", fmt.Errorf("wrong credentials")
+		return newToken, fmt.Errorf("wrong credentials")
 	}
 	// Token for the client
 	newToken, err = users.GenerateToken()
 	if err != nil {
-		return
+		return newToken, fmt.Errorf("[GenerateToken] error generating -> %w", err)
 	}
 	// Add token into DB
-	err = users.RegisterToken(userId, newToken, db)
+	err = users.RegisterToken(userId, newToken, db, tokenValidDays)
 	if err != nil {
-		return
+		return newToken, fmt.Errorf("[RegisterToken] error registering -> %w", err)
 	}
 
 	return
@@ -259,7 +287,7 @@ func (m *Message) ProcessFullAuth(c *net.Conn, db *gorm.DB) (newToken string, er
 func (m *Message) ValidateAuth() (auth *Auth, err error) {
 	err = json.Unmarshal(m.Payload, &auth)
 	if err != nil {
-		return
+		return nil, fmt.Errorf("[json.Unmarshal] error unmarshalling -> %w", err)
 	}
 	if auth == nil {
 		err = fmt.Errorf("broken message")
@@ -271,7 +299,7 @@ func (m *Message) ValidateAuth() (auth *Auth, err error) {
 func (m *Message) ValidateOK() (ok *OK, err error) {
 	err = json.Unmarshal(m.Payload, &ok)
 	if err != nil {
-		return
+		return nil, fmt.Errorf("[json.Unmarshal] error unmarshalling -> %w", err)
 	}
 	if ok == nil {
 		err = fmt.Errorf("broken message")
@@ -279,3 +307,16 @@ func (m *Message) ValidateOK() (ok *OK, err error) {
 	}
 	return
 }
+
+/*
+func (m *Message) ValidateInfo() (info *Info, err error) {
+	err = json.Unmarshal(m.Payload, &info)
+	if err != nil {
+		return nil, fmt.Errorf("[json.Unmarshal] error unmarshalling -> %w", err)
+	}
+	if info == nil {
+		err = fmt.Errorf("broken message")
+		return
+	}
+	return
+}*/

@@ -52,11 +52,15 @@ func ValidateToken(token string, db *gorm.DB) (ok bool, err error) {
 
 	//data.Scan()
 
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	/*if errors.Is(err, gorm.ErrRecordNotFound) {
 		err = nil
 	} else {
 		return
-	}
+	}*/
+	fmt.Println("client")
+	fmt.Println(client)
+	fmt.Println("err")
+	fmt.Println(err)
 
 	if time.Now().Unix() >= client.TokenExpiresAt.Unix() || time.Now().Unix() < client.TokenIssuedAt.Unix() {
 		return false, errors.New("token expired")
@@ -142,11 +146,11 @@ func GenerateToken() (token string, err error) {
 	return
 }
 
-func RegisterToken(userId uint, token string, db *gorm.DB) (err error) {
+func RegisterToken(userId uint, token string, db *gorm.DB, tokenValidDays int) (err error) {
 	newClient := Client{
 		UserId:         uint(userId),
 		Token:          token,
-		TokenIssuedAt:  time.Now(),
+		TokenIssuedAt:  time.Now().AddDate(0, 0, tokenValidDays),
 		TokenExpiresAt: time.Now(),
 		FirstConnectAt: time.Now(),
 		LastConnectAt:  time.Now(),

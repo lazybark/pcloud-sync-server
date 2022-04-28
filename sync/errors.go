@@ -1,14 +1,11 @@
 package sync
 
-import "time"
-
 type (
 	// ErrorType represents sync error code and human-readable name
 	ErrorType int
 
 	// Error is the model for error message payload
 	Error struct {
-		Timestamp     time.Time
 		Type          ErrorType
 		HumanReadable string
 	}
@@ -22,13 +19,15 @@ const (
 	ErrUnknownMessageType
 	ErrAccessDenied
 	ErrInternal
+	ErrTooMuchServerErrors
+	ErrTooMuchClientErrors
 
 	errors_end
 )
 
 // String() returns human-readable name of error code
 func (e ErrorType) String() string {
-	return [...]string{"", "Broken message", "Unknown message type", "Access denied", "Sync app internal error", ""}[e]
+	return [...]string{"", "Broken message", "Unknown message type", "Access denied", "Sync app internal error", "Too much errors on server side", "Too much errors on client side", ""}[e]
 }
 
 // CheckErrorType() checks error code for consistency

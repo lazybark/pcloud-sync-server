@@ -29,8 +29,20 @@ type (
 		ActiveConnectionsNumber int
 	}
 
+	ConfigClient struct {
+		Login         string
+		Password      string
+		Token         string
+		ServerAddress string
+		ServerPort    int
+		DeviceName    string
+		UserName      string
+		DeviceLabel   string
+	}
+
 	ActiveConnection struct {
 		EventsChan     chan (fsnotify.Event)
+		Active         bool
 		IP             net.Addr
 		DeviceName     string
 		ClientErrors   uint
@@ -39,9 +51,11 @@ type (
 		ConnectAt      time.Time
 		LastOperation  time.Time
 		DisconnectedAt time.Time
-		ClosedChan     chan (bool) // Channel for closing the sync routine
-		SyncActive     bool        // If the client has been authed and has an active sync messages channel
+		StateChan      chan (ConnectionEvent) // Channel for closing the sync routine
+		SyncActive     bool                   // If the client has been authed and has an active sync messages channel
 	}
+
+	ConnectionEvent int
 
 	// Config is a struct to define server behaviour
 	Config struct {
@@ -50,8 +64,11 @@ type (
 		KeyPath                  string `mapstructure:"KEY_PATH"`
 		HostName                 string `mapstructure:"HOST_NAME"`
 		Port                     string `mapstructure:"PORT"`
+		MaxClientErrors          uint   // Limit for client-side errors (or any other party) until problematic connection will be closed and ErrTooMuchClientErrors sent
+		MaxServerErrors          uint   // Limit for server-side errors until problematic connection will be closed and ErrTooMuchServerErrors sent
 		LogStats                 bool
 		CollectStats             bool
+		TokenValidDays           int
 		ServerVerboseLogging     bool   `mapstructure:"SERVER_VERBOSE_LOGGING"`
 		CountStats               bool   `mapstructure:"COUNT_STATS"`
 		FilesystemVerboseLogging bool   `mapstructure:"FILESYSTEM_VERBOSE_LOGGING"`
@@ -91,4 +108,10 @@ type (
 		Items         int
 		Size          int64
 	}
+)
+
+const (
+	ConnectionClose ConnectionEvent = iota + 1
+	ConnectionSyncStart
+	ConnectionSyncStop
 )

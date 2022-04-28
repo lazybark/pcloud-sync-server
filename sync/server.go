@@ -3,6 +3,8 @@ package sync
 import (
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"time"
 
@@ -12,14 +14,18 @@ import (
 	"go.uber.org/zap"
 )
 
-// NewSyncServer creates a sycn server instance
+var (
+	AppVersion = "0.0.0 2022.04.22"
+)
+
+// NewSyncServer creates a sync server instance
 func NewSyncServer() *Server {
 	return new(Server)
 }
 
 func (s *Server) Start() {
 	s.TimeStart = time.Now()
-	s.AppVersion = "0.0.0 2022.04.22"
+	s.AppVersion = AppVersion
 	// Get config into config.Current struct
 	err := s.LoadConfig(".")
 	if err != nil {
@@ -60,6 +66,8 @@ func (s *Server) Start() {
 		s.Logger.Fatal("Error flushing DB: ", err)
 	}
 
+	//users.CreateUserCLI(s.DB)
+
 	// Watch root dir
 	s.Logger.InfoGreen("Starting watcher")
 	go s.FilesystemWatcherRoutine()
@@ -91,7 +99,6 @@ func (s *Server) ConnectionsPool() {
 				c.EventsChan <- event
 				fmt.Println("Event sent")
 			}
-
 		}
 	}
 }
@@ -121,5 +128,31 @@ func (s *Server) LogStats() {
 	for {
 		time.Sleep(5 * time.Minute)
 		s.Logger.InfoMagenta("Server stats: \n - active users = 0\n - active connections = 0\n - data recieved = 0 Gb\n - data sent = 0 Gb\n - errors last 15 min / hour / 24 hours = 0/0/0")
+	}
+}
+
+func (s *Server) InterruptCatcher() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	select {
+	case sig := <-c:
+		s.Watcher.Close()
+		s.Logger.InfoRed(fmt.Sprintf("Got %s signal. Closing connections...", sig))
+		// Send active clients connection breaker
+		for _, c := range s.ActiveConnections {
+			if !c.Active { //
+				continue
+			}
+
+			select {
+			case c.StateChan <- ConnectionClose:
+				s.Logger.Info(fmt.Sprintf("(%v) closed", c.IP))
+			default:
+
+			}
+		}
+		s.Logger.InfoBackRed("Server stopped")
+
+		os.Exit(1)
 	}
 }
