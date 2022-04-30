@@ -89,7 +89,7 @@ func (f *Fsworker) MakeDBRecord(item fs.FileInfo, path string) error {
 		hash := ""
 		hash, err := hasher.HashFilePath(path, hasher.SHA256, 8192)
 		if err != nil {
-			f.Logger.Error(err)
+			f.Logger.Error("1", err)
 		}
 
 		record := File{
@@ -134,7 +134,7 @@ func (f *Fsworker) ScanDir(path string, dirs *[]Folder, files *[]File) (err erro
 			hash := ""
 			hash, err = hasher.HashFilePath(filepath.Join(path, item.Name()), hasher.SHA256, 8192)
 			if err != nil /*&& errors.Is(err, os.SyscallError)*/ {
-				f.Logger.Error(err)
+				f.Logger.Error("2", err)
 			}
 
 			file = File{

@@ -31,7 +31,7 @@ func (s *Server) FilesystemWatcherRoutine() {
 
 				// Pause before processing actions to make sure that target isn't locked
 				// If file hashing still produces errors (target busy) - increase pause time
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(500 * time.Millisecond)
 
 				if event.Op.String() == "CREATE" {
 					dat, err := os.Stat(event.Name)
@@ -67,7 +67,7 @@ func (s *Server) FilesystemWatcherRoutine() {
 
 						hash, err := hasher.HashFilePath(event.Name, hasher.SHA256, 8192)
 						if err != nil {
-							s.Logger.Error(err)
+							s.Logger.Error("4", err)
 						}
 
 						notifyEvent.Object = fsworker.File{
@@ -131,7 +131,7 @@ func (s *Server) FilesystemWatcherRoutine() {
 							hash := ""
 							hash, err := hasher.HashFilePath(event.Name, hasher.SHA256, 8192)
 							if err != nil {
-								s.Logger.Error(err)
+								s.Logger.Error("5", err)
 							}
 							file.FSUpdatedAt = dat.ModTime()
 							file.Size = dat.Size()

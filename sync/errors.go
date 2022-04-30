@@ -23,6 +23,7 @@ const (
 	ErrTooMuchClientErrors
 	ErrTooMuchCients
 	ErrTooMuchConnections
+	ErrUnknownIntension
 
 	errors_end
 )
@@ -32,7 +33,7 @@ func (e ErrorType) String() string {
 	if !e.CheckErrorType() {
 		return "illegal"
 	}
-	return [...]string{"illegal", "Broken message", "Unknown message type", "Access denied", "Sync app internal error", "Too much errors on server side", "Too much errors on client side", "Server has reached client limits", "Client has reached connections limit", "illegal"}[e]
+	return [...]string{"illegal", "Broken message", "Unknown message type", "Access denied", "Sync app internal error", "Too much errors on server side", "Too much errors on client side", "Server has reached client limits", "Client has reached connections limit", "Unknown connection intension", "illegal"}[e]
 }
 
 // CheckErrorType() checks error code for consistency

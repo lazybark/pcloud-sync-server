@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/gofrs/uuid"
 	"github.com/lazybark/go-helpers/hasher"
 	"github.com/lazybark/go-pretty-code/logs"
 	"github.com/lazybark/pcloud-sync-server/fsworker"
@@ -36,7 +37,7 @@ func (c *Client) Start() {
 	c.TimeStart = time.Now()
 	c.AppVersion = ServerVersion
 	c.ActionsBuffer = make(map[string][]BufferedAction)
-	// Get config into config.Current struct
+
 	err := c.LoadConfig(".")
 	if err != nil {
 		log.Fatal("Error getting config: ", err)
@@ -84,30 +85,38 @@ func (c *Client) Start() {
 
 	c.Logger.InfoGreen("Starting client")
 
-	c.InitSync()
+	c.Sync()
 }
 
-func (c *Client) InitSync() {
+func (c *Client) InitTLSConnection() (conn *tls.Conn, err error) {
 	cert, err := os.ReadFile(c.Config.ServerCert)
 	if err != nil {
-		log.Fatal(err)
+		return conn, fmt.Errorf("[os.ReadFile] unable to read file -> %w", err)
 	}
 	certPool := x509.NewCertPool()
 	if ok := certPool.AppendCertsFromPEM(cert); !ok {
-		log.Fatalf("unable to parse cert from %s", c.Config.ServerCert)
+		return conn, fmt.Errorf("[x509.NewCertPool] unable to parse cert from %s -> %w", c.Config.ServerCert, err)
 	}
 	config := &tls.Config{RootCAs: certPool}
 	// Step 1: init connect with specified server
-	conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", c.Config.ServerAddress, c.Config.ServerPort), config)
+	conn, err = tls.Dial("tcp", fmt.Sprintf("%s:%d", c.Config.ServerAddress, c.Config.ServerPort), config)
 	if err != nil {
-		log.Fatal(err)
+		return conn, fmt.Errorf("[tls.Dial] unable to dial to %s:%d -> %w", c.Config.ServerAddress, c.Config.ServerPort, err)
+	}
+
+	return
+}
+
+func (c *Client) Sync() {
+	conn, err := c.InitTLSConnection()
+	if err != nil {
+		c.Logger.FatalBackRed("[Sync] can not init connection -> %w", err)
 	}
 	// Step 2: send auth message as hello and wait for token
 	var message Message
 	//message.AppVersion = c.AppVersion
-
-	bytesSent, err := message.SendAuthMessage(conn, c.Config.Login, c.Config.Password, "", "", false)
-
+	c.Logger.Info(fmt.Sprintf("Sending hello to %v", conn.RemoteAddr()))
+	bytesSent, err := message.SendHello(conn, SyncIntensionClient, "test_client_1", c.AppVersion, "lazybark.dev@gmail.com", 0, 15, 2048)
 	if err != nil {
 		c.Logger.Error(" - error making response: ", err)
 	}
@@ -131,7 +140,43 @@ func (c *Client) InitSync() {
 			continue
 		}
 
-		c.Logger.InfoCyan(fmt.Sprintf("Connected to %s (%v). Server: version - %s, name - %s", c.Config.ServerAddress, conn.RemoteAddr(), "here will be server version", "here will be server name" /* message.PartyName*/))
+		if message.Type == MessageHandshake {
+			handshake, err := message.ParseHandshake()
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			c.Logger.InfoGreen(fmt.Sprintf("Got handshake from %v. Server name %s (v %s). Max file size %d, max connections per user %d", conn.RemoteAddr(), handshake.PartyName, handshake.AppVersion, handshake.MaxFileSize, handshake.MaxConnectionsPerUser))
+			c.Logger.InfoGreen(fmt.Sprintf("Server owner info: %s", handshake.OwnerContacts))
+
+			break
+		}
+
+	}
+
+	bytesSent, err = message.SendAuthMessage(conn, c.Config.Login, c.Config.Password, "", "", false)
+	if err != nil {
+		c.Logger.Error(" - error making response: ", err)
+	}
+
+	for {
+		netData, err := bufio.NewReader(conn).ReadBytes(MessageTerminator)
+		if err != nil {
+
+			// If connection closed - break the cycle
+			if errors.As(err, &io.ErrClosedPipe) {
+				c.Logger.Info(fmt.Sprintf("(%v) - conn closed by other party", conn.RemoteAddr()))
+				break
+			}
+			c.Logger.Error(fmt.Sprintf("(%v)[ReadBytes] - error reading data: %v", conn.RemoteAddr(), err))
+			continue
+		}
+
+		err = message.Parse(&netData)
+		if err != nil {
+			c.Logger.Error(fmt.Sprintf("(%v)[message.Parse] - broken message: %v", conn.RemoteAddr(), err))
+			continue
+		}
 
 		if message.Type == MessageToken {
 			newToken, err := message.ParseNewToken()
@@ -154,11 +199,9 @@ func (c *Client) InitSync() {
 							return
 						}
 						fmt.Println("Getting", fileToGet.Name)
+
 						c.FilesInRow = append(c.FilesInRow, fileToGet)
-						bytesSent, err = message.SendGetFile(conn, fileToGet)
-						if err != nil {
-							c.Logger.Error(" - error making response: ", err)
-						}
+						go c.GetFile(&fileToGet)
 					}
 				}
 			}()
@@ -543,7 +586,7 @@ func (c *Client) FilesystemWatcherRoutine() {
 							hash := ""
 							hash, err := hasher.HashFilePath(event.Name, hasher.SHA256, 8192)
 							if err != nil {
-								c.Logger.Error(err)
+								c.Logger.Error("3", err)
 							}
 							file.FSUpdatedAt = dat.ModTime()
 							file.Size = dat.Size()
@@ -608,4 +651,149 @@ func (c *Client) FilesystemWatcherRoutine() {
 	}
 	c.Logger.Info(fmt.Sprintf("%s added to watcher", c.Config.FileSystemRootPath))
 	<-done
+}
+
+func (c *Client) GetFile(fileToGet *GetFile) {
+	conn2, err := c.InitTLSConnection()
+	if err != nil {
+		c.Logger.FatalBackRed("[Sync] can not init connection -> %w", err)
+	}
+	defer conn2.Close()
+	// Step 2: send auth message as hello and wait for token
+	var message2 Message
+
+	_, err = message2.SendAuthMessage(conn2, c.Config.Login, c.Config.Password, "", "", false)
+	if err != nil {
+		c.Logger.Error(" - error making response: ", err)
+	}
+
+	_, err = message2.SendGetFile(conn2, *fileToGet)
+	if err != nil {
+		c.Logger.Error(" - error making response: ", err)
+	}
+
+	// Await answer with file
+	fmt.Println("waiting for message")
+	for {
+		netData2, err := bufio.NewReader(conn2).ReadBytes(MessageTerminator)
+		if err != nil {
+
+			// If connection closed - break the cycle
+			if errors.As(err, &io.ErrClosedPipe) {
+				c.Logger.Info(fmt.Sprintf("(%v) - conn closed by other party", conn2.RemoteAddr()))
+				return
+			}
+			c.Logger.Error(fmt.Sprintf("(%v)[ReadBytes] - error reading data: %v", conn2.RemoteAddr(), err))
+			continue
+		}
+
+		err = message2.Parse(&netData2)
+		if err != nil {
+			c.Logger.Error(fmt.Sprintf("(%v)[message.Parse] - broken message: %v", conn2.RemoteAddr(), err))
+			continue
+		}
+
+		fullPath := new(string)
+		var updatedAt *time.Time
+
+		if message2.Type == MessageSendFile {
+			fmt.Println("SERVER WANTS TO SEND A FILE 2")
+			file, err := message2.ParseFileData()
+			if err != nil {
+				fmt.Println(err)
+			}
+
+			*fullPath = c.FW.UnEscapeAddress(filepath.Join(file.Path, file.Name))
+			updatedAt = &file.FSUpdatedAt
+			u2, _ := uuid.NewV4()
+			tempPath := c.Config.CacheDir + string(filepath.Separator) + u2.String()
+
+			c.ActionsBufferMutex.Lock()
+			c.ActionsBuffer[*fullPath] = append(c.ActionsBuffer[*fullPath],
+				BufferedAction{
+					Action:    fsnotify.Create,
+					Timestamp: time.Now(),
+				})
+			c.ActionsBufferMutex.Unlock()
+
+			fmt.Println(c.ActionsBuffer[*fullPath])
+
+			if err := os.MkdirAll(c.Config.CacheDir, os.ModePerm); err != nil {
+				c.Logger.Error(err)
+				continue
+			}
+			theFile, e := os.Create(tempPath)
+			if e != nil {
+				log.Fatal(e)
+			}
+			defer theFile.Close()
+
+			for {
+				netData2, err := bufio.NewReader(conn2).ReadBytes(MessageTerminator)
+				if err != nil {
+
+					// If connection closed - break the cycle
+					if errors.As(err, &io.ErrClosedPipe) {
+						c.Logger.Info(fmt.Sprintf("(%v) - conn closed by other party", conn2.RemoteAddr()))
+						return
+					}
+					c.Logger.Error(fmt.Sprintf("(%v)[ReadBytes] - error reading data: %v", conn2.RemoteAddr(), err))
+					continue
+				}
+
+				err = message2.Parse(&netData2)
+				if err != nil {
+					c.Logger.Error(fmt.Sprintf("(%v)[message.Parse] - broken message: %v", conn2.RemoteAddr(), err))
+					continue
+				}
+
+				if message2.Type == MessageFileParts {
+					n, err := theFile.Write(message2.Payload)
+					if err != nil {
+						fmt.Println("Errpr", err)
+						return
+					}
+
+					fmt.Println("writen bytesL ", n)
+
+					continue
+
+				} else if message2.Type == MessageFileEnd {
+
+					fmt.Println("Got file end")
+
+					err = os.Chtimes(tempPath, *updatedAt, *updatedAt)
+					if err != nil {
+						fmt.Println(err)
+					}
+
+					theFile.Close()
+
+					// Move the file to right position
+					err := os.Rename(tempPath, *fullPath)
+					if err != nil {
+						c.Logger.Error("moving failed: ", *fullPath, err)
+					}
+
+					dat, err := os.Stat(*fullPath)
+					if err != nil {
+						c.Logger.Error("Object reading failed: ", *fullPath, err)
+						continue
+					}
+
+					// Add object to DB
+					err = c.FW.MakeDBRecord(dat, *fullPath)
+					if err != nil && err.Error() != "UNIQUE constraint failed: files.name, files.path" {
+						c.Logger.Error(fmt.Sprintf("Error making record for %s: ", *fullPath), err)
+					}
+					break
+				}
+			}
+
+			return
+		} else {
+			fmt.Println(message2.Type)
+			continue
+		}
+	}
 }

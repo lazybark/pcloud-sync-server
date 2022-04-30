@@ -75,6 +75,7 @@ type (
 		Token              string `mapstructure:"TOKEN"`
 		ServerAddress      string `mapstructure:"SERVER_ADDRESS"`
 		LogDirMain         string `mapstructure:"LOG_DIR_MAIN"`
+		CacheDir           string `mapstructure:"CACHE_DIR"`
 		ServerPort         int    `mapstructure:"SERVER_PORT"`
 		DeviceName         string `mapstructure:"DEVICE_NAME"`
 		UserName           string `mapstructure:"USER_NAME"`

@@ -16,6 +16,14 @@ func main() {
 
 	*/
 
+	// Как ускорить работу с массивами?
+
+	//Mode в конфиге решает, в каком режиме будет работать сервер
+	// SERVER - regular main server, MIRROR - server that just gets and stores current structure
+	// ENDPOINT - server that does not store data - just passes on fs-events
+
+	//File versioning
+
 	//Рутина, которая чистит старый action buffer
 	//To DO: -v flag for server verbose logging, -f for filesystem verbose logging
 	//-s flag for total silent mode

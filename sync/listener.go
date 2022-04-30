@@ -138,9 +138,21 @@ func (s *Server) Listen() {
 				}
 
 				fmt.Println("client read:", string(netData))
-				fmt.Println("client read:", message)
 
-				if message.Type == MessageAuth {
+				if message.Type == MessageHello {
+					hello, err := message.ParseHello()
+					if err != nil {
+						fmt.Println(err)
+					}
+					fmt.Println("Got hello from", hello)
+
+					_, err = response.SendHandshake(conn, "test_client_1", s.AppVersion, "lazybark.dev@gmail.com", 0, 15, 2048)
+					if err != nil {
+						s.Logger.Error(" - error making response: ", err)
+					}
+					continue
+
+				} else if message.Type == MessageAuth {
 					newToken, err := message.ProcessFullAuth(&conn, s.DB, s.Config.TokenValidDays)
 					if err != nil {
 						s.Logger.Error(fmt.Sprintf("(%v)[message.ProcessFullAuth] - error parsing auth: %v", conn.RemoteAddr(), err))

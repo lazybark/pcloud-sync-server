@@ -29,12 +29,24 @@ type (
 
 	SyncObject int
 
+	SyncIntension int
+
 	// Message is the model for base sync message
 	Message struct {
 		Type      MessageType
 		Token     string
 		Timestamp time.Time
 		Payload   []byte
+	}
+
+	Hello struct {
+		ConnectGoal           SyncIntension
+		PartyName             string
+		AppVersion            string
+		OwnerContacts         string
+		MaxClients            int
+		MaxConnectionsPerUser int
+		MaxFileSize           int
 	}
 
 	Handshake struct {
@@ -103,6 +115,23 @@ type (
 		Data          []byte
 	}
 )
+
+const (
+	sync_intensions_start SyncIntension = iota
+
+	SyncIntensionClient
+	SyncIntensionMirror
+
+	sync_intensions_end
+	SyncIntensionIllegal // Just for readability
+)
+
+func (i SyncIntension) String() string {
+	if sync_intensions_start < i && i < sync_intensions_end {
+		return "Unknown Intension"
+	}
+	return [...]string{"Unknown Intension", "Client", "Mirror server", "Unknown Intension", "Unknown Intension"}[i]
+}
 
 const (
 	sync_events_start SyncEvent = iota
@@ -182,13 +211,16 @@ const (
 	MessageEndSync         // The other side doesn't need filesystem events anymore
 	MessageCloseConnection // The other side doesn't need the connection anymore **POSSIBLY REDUNDANT**
 	MessageSyncEvent       // Notify other perties that file or dir were created / changed / deleted
-	MessageHandshake       // Notify other perties that file or dir were created / changed / deleted
+	MessageHandshake
+	MessageHello
+	MessageFileParts
+	MessageFileEnd
 
 	messages_end
 )
 
 func (m MessageType) String() string {
-	return [...]string{"illegal", "Error", "Authorization", "New token", "MessageDirSyncReq", "MessageDirSyncResp", "MessageGetFile", "MessageSendFile", "MessageConnectionEnd", "OK", "MessageStartSync", "MessageEndSync", "MessageCloseConnection", "MessageSyncEvent", "illegal"}[m]
+	return [...]string{"illegal", "Error", "Authorization", "New token", "MessageDirSyncReq", "MessageDirSyncResp", "MessageGetFile", "MessageSendFile", "MessageConnectionEnd", "OK", "MessageStartSync", "MessageEndSync", "MessageCloseConnection", "MessageSyncEvent", "MessageHandshake", "MessageHello", "MessageFileParts", "MessageFileEnd", "illegal"}[m]
 }
 
 func (m *Message) CheckType() bool {
@@ -196,6 +228,91 @@ func (m *Message) CheckType() bool {
 		return true
 	}
 	return false
+}
+
+func (m *Message) SendHandshake(c interface{}, partyName string, appVersion string, ownerContacts string, maxClients int, maxConnectionsPerUser int, maxFileSize int) (bytesSent int, err error) {
+	payload := Handshake{
+		PartyName:             partyName,
+		AppVersion:            appVersion,
+		OwnerContacts:         ownerContacts,
+		MaxClients:            maxClients,
+		MaxConnectionsPerUser: maxConnectionsPerUser,
+		MaxFileSize:           maxFileSize,
+	}
+
+	b := new(bytes.Buffer)
+	err = json.NewEncoder(b).Encode(payload)
+	if err != nil {
+		return
+	}
+
+	m.Payload = b.Bytes()
+
+	m.Type = MessageHandshake
+	m.Timestamp = time.Now()
+
+	bytesSent, err = m.Send(c)
+	if err != nil {
+		return
+	}
+
+	return
+}
+
+func (m *Message) ParseHandshake() (handskage Handshake, err error) {
+	err = json.Unmarshal(m.Payload, &handskage)
+	if err != nil {
+		return handskage, fmt.Errorf("[ParseHandshake] error unmarshalling -> %w", err)
+	}
+	/*// We need to understad what type of error this is - 'unknown' is not an option
+	if handskage.Name == "" {
+		err = fmt.Errorf("broken message")
+		return
+	}*/
+	return
+}
+
+func (m *Message) SendHello(c interface{}, goal SyncIntension, partyName string, appVersion string, ownerContacts string, maxClients int, maxConnectionsPerUser int, maxFileSize int) (bytesSent int, err error) {
+	payload := Hello{
+		ConnectGoal:           goal,
+		PartyName:             partyName,
+		AppVersion:            appVersion,
+		OwnerContacts:         ownerContacts,
+		MaxClients:            maxClients,
+		MaxConnectionsPerUser: maxConnectionsPerUser,
+		MaxFileSize:           maxFileSize,
+	}
+
+	b := new(bytes.Buffer)
+	err = json.NewEncoder(b).Encode(payload)
+	if err != nil {
+		return
+	}
+
+	m.Payload = b.Bytes()
+
+	m.Type = MessageHello
+	m.Timestamp = time.Now()
+
+	bytesSent, err = m.Send(c)
+	if err != nil {
+		return
+	}
+
+	return
+}
+
+func (m *Message) ParseHello() (hello Hello, err error) {
+	err = json.Unmarshal(m.Payload, &hello)
+	if err != nil {
+		return hello, fmt.Errorf("[ParseHello] error unmarshalling -> %w", err)
+	}
+	/*// We need to understad what type of error this is - 'unknown' is not an option
+	if handskage.Name == "" {
+		err = fmt.Errorf("broken message")
+		return
+	}*/
+	return
 }
 
 /*
@@ -408,27 +525,7 @@ func (m *Message) SendFile(c interface{}, file string, fw *fsworker.Fsworker) (b
 		Type:        filepath.Ext(file),
 	}
 
-	//data := []byte{}
-	buf := make([]byte, 8192)
-	n := 0
-
-	r := bufio.NewReader(fileData)
-
-	for {
-		n, err = r.Read(buf)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			fmt.Println("ERRRE", err)
-			return
-		}
-
-		payload.Data = append(payload.Data, buf[:n]...)
-
-	}
-	fmt.Println("DDD4")
-
+	// Sending info about file data
 	b := new(bytes.Buffer)
 	err = json.NewEncoder(b).Encode(payload)
 	if err != nil {
@@ -442,7 +539,49 @@ func (m *Message) SendFile(c interface{}, file string, fw *fsworker.Fsworker) (b
 	if err != nil {
 		return
 	}
+	fmt.Println("DDD4")
+
+	//data := []byte{}
+
+	// TLS record size can be up to 16KB but some extra bytes may apply
+	// Read this before you change
+	// https://hpbn.co/transport-layer-security-tls/#optimize-tls-record-size
+	buf := make([]byte, 15360)
+	n := 0
+
+	r := bufio.NewReader(fileData)
+
+	m.Type = MessageFileParts
+
+	for {
+		n, err = r.Read(buf)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Println("ERRRE", err)
+			return
+		}
+
+		m.Payload = buf[:n]
+		m.Timestamp = time.Now()
+
+		bytesSent, err = m.Send(c)
+		if err != nil {
+			return
+		}
+
+	}
 	fmt.Println("DDD5")
+
+	m.Type = MessageFileEnd
+	m.Timestamp = time.Now()
+
+	bytesSent, err = m.Send(c)
+	if err != nil {
+		return
+	}
+	fmt.Println("DDD6")
 
 	return
 }
