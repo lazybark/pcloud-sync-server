@@ -10,12 +10,13 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/lazybark/go-pretty-code/logs"
+	"github.com/lazybark/pcloud-sync-server/fsworker"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
 
 var (
-	AppVersion = "0.0.0 2022.04.22"
+	ServerVersion = "0.0.0-alpha 2022.04.29"
 )
 
 // NewSyncServer creates a sync server instance
@@ -25,7 +26,7 @@ func NewSyncServer() *Server {
 
 func (s *Server) Start() {
 	s.TimeStart = time.Now()
-	s.AppVersion = AppVersion
+	s.AppVersion = ServerVersion
 	// Get config into config.Current struct
 	err := s.LoadConfig(".")
 	if err != nil {
@@ -49,7 +50,7 @@ func (s *Server) Start() {
 	s.OpenSQLite()
 
 	// Start connection pool manager
-	s.ConnNotifier = make(chan fsnotify.Event)
+	s.ConnNotifier = make(chan ConnNotifierEvent)
 	defer close(s.ConnNotifier)
 	go s.ConnectionsPool()
 
@@ -66,6 +67,9 @@ func (s *Server) Start() {
 		s.Logger.Fatal("Error flushing DB: ", err)
 	}
 
+	// New filesystem worker
+	s.FW = fsworker.NewWorker(s.Config.FileSystemRootPath, s.DB, logger, watch)
+
 	//users.CreateUserCLI(s.DB)
 
 	// Watch root dir
@@ -73,7 +77,7 @@ func (s *Server) Start() {
 	go s.FilesystemWatcherRoutine()
 
 	// Process and watch all subdirs
-	err = s.ProcessDirectory(s.Config.FileSystemRootPath)
+	err = s.FW.ProcessDirectory(s.Config.FileSystemRootPath)
 	if err != nil {
 		s.Logger.Fatal("Error processing FS: ", err)
 	}
@@ -88,15 +92,20 @@ func (s *Server) ConnectionsPool() {
 	// Endless await
 	for {
 		select {
-		case event, ok := <-s.ConnNotifier:
+		case data, ok := <-s.ConnNotifier:
 			if !ok {
 				return
+			}
+			notifyEvent := ConnNotifierEvent{
+				Event:  data.Event,
+				Object: data.Object,
 			}
 			for _, c := range s.ActiveConnections {
 				if !c.SyncActive { // Only share data with connections that are intended to sync
 					continue
 				}
-				c.EventsChan <- event
+
+				c.EventsChan <- notifyEvent
 				fmt.Println("Event sent")
 			}
 		}

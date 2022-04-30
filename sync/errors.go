@@ -21,13 +21,18 @@ const (
 	ErrInternal
 	ErrTooMuchServerErrors
 	ErrTooMuchClientErrors
+	ErrTooMuchCients
+	ErrTooMuchConnections
 
 	errors_end
 )
 
 // String() returns human-readable name of error code
 func (e ErrorType) String() string {
-	return [...]string{"", "Broken message", "Unknown message type", "Access denied", "Sync app internal error", "Too much errors on server side", "Too much errors on client side", ""}[e]
+	if !e.CheckErrorType() {
+		return "illegal"
+	}
+	return [...]string{"illegal", "Broken message", "Unknown message type", "Access denied", "Sync app internal error", "Too much errors on server side", "Too much errors on client side", "Server has reached client limits", "Client has reached connections limit", "illegal"}[e]
 }
 
 // CheckErrorType() checks error code for consistency

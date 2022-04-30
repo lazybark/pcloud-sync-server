@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 	"time"
-
-	"github.com/fsnotify/fsnotify"
-	"github.com/lazybark/pcloud-sync-server/users"
 )
 
 func (s *Server) Listen() {
@@ -44,7 +42,7 @@ func (s *Server) Listen() {
 		}
 
 		go func(c net.Conn) {
-			eventsChannel := make(chan fsnotify.Event)
+			eventsChannel := make(chan ConnNotifierEvent)
 			connStateChannel := make(chan ConnectionEvent)
 			connection := ActiveConnection{
 				EventsChan: eventsChannel,
@@ -64,13 +62,15 @@ func (s *Server) Listen() {
 			var recievedBytes uint
 
 			response.Token = s.Config.ServerToken
+			//response.AppVersion = s.AppVersion
+			//response.PartyName = s.Config.ServerName
 			//var bytesSent int
 
 			// Routine to maintain current connection
 			go func() {
 				for {
 					select {
-					case event, ok := <-eventsChannel:
+					case data, ok := <-eventsChannel:
 						if !ok {
 							io.WriteString(c, "Channel closed")
 							// Close sync in pool
@@ -80,7 +80,14 @@ func (s *Server) Listen() {
 							return
 						}
 						fmt.Println("Sending to client")
-						io.WriteString(c, fmt.Sprintf("%s %s", s.EscapeAddress(event.Name), event.Op))
+						_, err := message.SendSyncEvent(c, data.Event.Op, data.Object)
+						if err != nil {
+							fmt.Println(err)
+						}
+						/*_, err := io.WriteString(c, fmt.Sprintf("%s %s", s.FW.EscapeAddress(event.Name), event.Op)+MessageTerminatorString)
+						if err != nil {
+							fmt.Println(err)
+						}*/
 
 					case state, ok := <-connStateChannel:
 						if !ok || state == ConnectionClose {
@@ -119,12 +126,6 @@ func (s *Server) Listen() {
 					}
 					s.Logger.Error(fmt.Sprintf("(%v)[ReadBytes] - error reading data: %v", conn.RemoteAddr(), err))
 					continue
-					/*if neterr, ok := err.(net.Error); ok {
-						fmt.Println("SSSasdasdasdS", neterr)
-						fmt.Printf("%T %+v", err, err)
-						break // connection will be closed
-					}*/
-
 				}
 
 				err = message.Parse(&netData)
@@ -193,6 +194,9 @@ func (s *Server) Listen() {
 						s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), len(netData), bytesSent))
 					}
 
+					// Token persists in server memory only
+					connection.Token = newToken
+					continue
 				} else if message.Type == MessageOK {
 					ok, err := message.ValidateOK()
 					if err != nil {
@@ -212,24 +216,10 @@ func (s *Server) Listen() {
 						s.Logger.Warn(conn.RemoteAddr(), " - client sent error: ", ok.HumanReadable)
 						continue
 					}
-
+					continue
 				} else if message.Type == MessageStartSync {
-					fmt.Println(message.Token)
-					ok, err := users.ValidateToken(message.Token, s.DB)
-					if err != nil {
-						s.Logger.Error(fmt.Sprintf("(%v)[MessageStartSync] - error parsing auth: %v", conn.RemoteAddr(), err))
 
-						_, err := response.ReturnError(&conn, ErrBrokenMessage)
-						if err != nil {
-							s.Logger.Error(conn.RemoteAddr(), " - error making response: ", err)
-						}
-						if connection.ServerErrors >= s.Config.MaxServerErrors && s.Config.MaxServerErrors > 0 {
-							s.Logger.Error(conn.RemoteAddr(), " - server error per connection limit, conn will be closed: ")
-							s.CloseConnection(&connection, connStateChannel)
-							return
-						}
-						continue
-					}
+					ok := connection.Token == message.Token
 
 					if !ok {
 						s.Logger.InfoYellow(conn.RemoteAddr(), " - wrong token")
@@ -257,24 +247,12 @@ func (s *Server) Listen() {
 					// Starting sync channel with the other party
 					connStateChannel <- ConnectionSyncStart
 					// Requesting to start syncing back
-					response.ReturnInfoMessage(&conn, s.Config.ServerToken, MessageOK)
-					response.ReturnInfoMessage(&conn, s.Config.ServerToken, MessageStartSync)
+					response.ReturnInfoMessage(&conn, MessageOK)
+					response.ReturnInfoMessage(&conn, MessageStartSync)
+					continue
 				} else if message.Type == MessageEndSync {
-					ok, err := users.ValidateToken(message.Token, s.DB)
-					if err != nil {
-						s.Logger.Error(fmt.Sprintf("(%v)[MessageEndSync] - error parsing auth: %v", conn.RemoteAddr(), err))
 
-						_, err := response.ReturnError(&conn, ErrBrokenMessage)
-						if err != nil {
-							s.Logger.Error(conn.RemoteAddr(), " - error making response: ", err)
-						}
-						if connection.ServerErrors >= s.Config.MaxServerErrors && s.Config.MaxServerErrors > 0 {
-							s.Logger.Warn(fmt.Sprintf("(%v)[Config.MaxServerErrors] - 'client error per connection' limit reached, conn will be closed", conn.RemoteAddr()))
-							s.CloseConnection(&connection, connStateChannel)
-							return
-						}
-						continue
-					}
+					ok := connection.Token == message.Token
 
 					if !ok {
 						s.Logger.InfoYellow(conn.RemoteAddr(), " - wrong token")
@@ -302,207 +280,65 @@ func (s *Server) Listen() {
 					// Starting sync channel with the other party
 					connStateChannel <- ConnectionSyncStop
 					// Requesting to start syncing back
-					response.ReturnInfoMessage(&conn, s.Config.ServerToken, MessageOK)
-					response.ReturnInfoMessage(&conn, s.Config.ServerToken, MessageEndSync)
+					response.ReturnInfoMessage(&conn, MessageOK)
+					response.ReturnInfoMessage(&conn, MessageEndSync)
+					continue
+				} else if message.Type == MessageCloseConnection {
+
+					ok := connection.Token == message.Token
+
+					if !ok {
+						s.Logger.InfoYellow(conn.RemoteAddr(), " - wrong token")
+
+						bytesSent, err := response.ReturnError(&conn, ErrAccessDenied)
+						if err != nil {
+							s.Logger.Error(conn.RemoteAddr(), " - error making response: ", err)
+							if connection.ServerErrors >= s.Config.MaxServerErrors && s.Config.MaxServerErrors > 0 {
+								s.Logger.Warn(fmt.Sprintf("(%v)[Config.MaxServerErrors] - 'client error per connection' limit reached, conn will be closed", conn.RemoteAddr()))
+								s.CloseConnection(&connection, connStateChannel)
+								return
+							}
+							continue
+						}
+						if s.Config.CountStats {
+							fmt.Println(bytesSent)
+						}
+						if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
+							s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), len(netData), bytesSent))
+						}
+
+						continue
+					}
+
+					// Requesting to start syncing back
+					response.ReturnInfoMessage(&conn, MessageOK)
+					s.CloseConnection(&connection, connStateChannel)
+					return
+				} else if message.Type == MessageGetFile {
+					// Create separate stream to send a file
+					fmt.Println("GET FILE")
+					getFile, err := message.ParseGetFile()
+					if err != nil {
+						fmt.Println(err)
+					}
+					go func() {
+						_, err := message.SendFile(conn, s.FW.UnEscapeAddress(filepath.Join(getFile.Path, getFile.Name)), s.FW)
+						if err != nil {
+							fmt.Println(err)
+						}
+						fmt.Println("SENT FILE")
+					}()
+
+					continue
 				}
 
 			}
-
-			//time.Sleep(1 * time.Second)
-			// Closing the sync routine
 
 			if s.Config.CountStats {
 				fmt.Println(recievedBytes)
 			}
 
-			/*s.ChannelMutex.Lock()
-			s.ActiveConnectionsNumber--
-			s.Logger.Info(fmt.Sprintf("(%v)[Connection closed] - recieved %d bytes, sent %d bytes. Active connections: %d", conn.RemoteAddr(), 0, 0, s.ActiveConnectionsNumber))
-			s.ChannelMutex.Unlock()*/
-
 			s.CloseConnection(&connection, connStateChannel)
-
-			/*temp := strings.TrimSpace(string(netData))
-			if temp == ConnectionCloser {
-				return
-			}*/
-
-			/*recievedBytes, err := message.Read(c)
-			if err != nil {
-				s.Logger.Error(conn.RemoteAddr(), " - error reading data: ", err)
-
-				bytesSent, err := response.ReturnError(&conn, ErrBrokenMessage)
-				if err != nil {
-					s.Logger.Error(conn.RemoteAddr(), " - error making response: ", err)
-					if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
-						s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
-					}
-					return
-				}
-
-				if s.Config.CountStats {
-					fmt.Println(bytesSent)
-				}
-			}
-
-			fmt.Println(message)
-			io.WriteString(c, "string(some response)")
-
-			if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
-				s.Logger.Info(fmt.Sprintf("%v - recieved %d bytes, sent %d bytes", conn.RemoteAddr(), recievedBytes, bytesSent))
-			}*/
-
-			// Process authorization
-			/*if message.Type == MessageAuth {
-			} else if message.Type == MessageDirSyncReq { // Client requested to sync some directory
-
-				// Вернуть список изменений с момента последнего подключения этого клиента
-				// Если папка была создана после этого момента - вернуть всю папку
-
-			}*/
-
-			/*
-				//the only message type allowed without token is "auth"
-				if messageRecieved.Type != "auth" {
-					if messageRecieved.Token == "" {
-						logger.Warn("No token: ", conn.RemoteAddr())
-
-						if retErr := returnError(3, config.Current.ServerToken, &c); retErr != nil {
-							logger.Error("Error making response: ", err)
-						}
-						return
-					}
-
-					ok, err := users.ValidateToken(messageRecieved.Token, db)
-					if err != nil {
-						logger.Warn("Error validating token: ", err, conn.RemoteAddr())
-
-						if retErr := returnError(3, config.Current.ServerToken, &c); retErr != nil {
-							logger.Error("Error making response: ", err)
-						}
-						return
-					}
-
-					if !ok {
-						if config.Current.ServerVerboseLogging {
-							logger.InfoYellow(conn.RemoteAddr(), " - incorrect token")
-						}
-
-						if retErr := returnError(3, config.Current.ServerToken, &c); retErr != nil {
-							logger.Error("Error making response: ", err)
-						}
-						return
-					}
-
-					//scan all files in root dir
-					/*err = filesystem.ScanDirToDB(db, appConfig.FileSystemRootPath, watcher)
-					if err != nil {
-						logger.Zap.Error("Error scanning dir: ", err)
-					}
-					//compare files from client with files on server
-					//return correct list
-
-					io.WriteString(c, "string(response)")
-
-				}*/
-			/*
-				//now implement actions needed
-				if messageRecieved.Type == "sync" { //if client wants to sync
-
-				} else if messageRecieved.Type == "auth" { //client sends creds to auth
-					//empty creds not allowed
-					if messageRecieved.Auth.Login == "" || messageRecieved.Auth.Password == "" {
-						logger.Error("No credentials provided: ", conn.RemoteAddr())
-
-						if retErr := returnError(3, config.Current.ServerToken, &c); retErr != nil {
-							logger.Error("Error making response: ", err)
-						}
-						return
-					}
-
-					ok, userId, err := users.ValidateUserCreds(messageRecieved.Auth.Login, messageRecieved.Auth.Password, db)
-					if err != nil {
-						logger.Error("Error validating credentials: ", err, conn.RemoteAddr())
-
-						if retErr := returnError(3, config.Current.ServerToken, &c); retErr != nil {
-							logger.Error("Error making response: ", err)
-						}
-						return
-					}
-
-					if !ok {
-						logger.Info("Wrong login or password: ", conn.RemoteAddr())
-						if retErr := returnError(3, config.Current.ServerToken, &c); retErr != nil {
-							logger.Error("Error making response: ", err.Error())
-						}
-						return
-					}
-
-					//if everything fine - generate token
-					token, err := users.GenerateToken()
-					if err != nil {
-						logger.Error(fmt.Sprintf("Error generating token: %v", err))
-
-						if retErr := returnError(4, config.Current.ServerToken, &c); retErr != nil {
-							logger.Error(fmt.Sprintf("Error making response: %v", err))
-						}
-						return
-					}
-
-					err = users.RegisterToken(userId, token, db)
-					if err != nil {
-						logger.Error(fmt.Sprintf("Error registering token: %v", err))
-
-						if retErr := returnError(4, config.Current.ServerToken, &c); retErr != nil {
-							logger.Error(fmt.Sprintf("Error making response: %v", err))
-						}
-						return
-					}
-
-					//return new token to client
-					respStruct := Message{
-						Type:      "new_token",
-						Token:     config.Current.ServerToken,
-						Auth:      Auth{NewToken: token},
-						TimeStamp: time.Now(),
-					}
-					response, err := json.Marshal(respStruct)
-					if err != nil {
-						logger.Error(fmt.Sprintf("Error marshaling message: %v", err))
-
-						if retErr := returnError(4, config.Current.ServerToken, &c); retErr != nil {
-							logger.Error(fmt.Sprintf("Error making response: %v", retErr))
-						}
-						return
-					}
-					io.WriteString(c, string(response))
-
-					return
-
-				} else if messageRecieved.Type == "new_file" {
-
-				} else if messageRecieved.Type == "get_file" {
-
-				} else {
-					logger.Info("Broken message: ", err, conn.RemoteAddr())
-
-					if retErr := returnError(2, config.Current.ServerToken, &c); retErr != nil {
-						logger.Error("Error making response: ", err.Error())
-					}
-					return
-				}*/
-
-			//check if this client has right token
-
-			//if not - demand credentials
-
-			//compare existing files on the server with files on the client
-
-			//send actual file list (if no new files on server)
-
-			//demand some files from client if it has newer versions or brand new files
-			//respond to client
-			//io.WriteString(c, "Got your message!\n")
 
 		}(conn)
 	}
@@ -514,11 +350,12 @@ func (s *Server) CloseConnection(connection *ActiveConnection, connStateChannel 
 	// Close sync in pool, so we can trash it
 	s.ActiveConnections[connection.NumerInPool].Active = false
 	s.ActiveConnections[connection.NumerInPool].SyncActive = false
+	s.ActiveConnections[connection.NumerInPool].DisconnectedAt = time.Now()
 	s.ChannelMutex.Unlock()
 
 	connStateChannel <- ConnectionClose
 
 	if s.Config.ServerVerboseLogging && !s.Config.SilentMode {
-		s.Logger.Info(fmt.Sprintf("(%v)[Connection closed] - recieved %d bytes, sent %d bytes. Active connections: %d", connection.IP, 0, 0, s.ActiveConnectionsNumber))
+		s.Logger.Info(fmt.Sprintf("(%v)[Connection closed] - recieved %d bytes, sent %d bytes. Errors: %d. Active connections: %d", connection.IP, s.ActiveConnections[connection.NumerInPool].BytesRecieved, s.ActiveConnections[connection.NumerInPool].BytesSent, s.ActiveConnections[connection.NumerInPool].ClientErrors+s.ActiveConnections[connection.NumerInPool].ServerErrors, s.ActiveConnectionsNumber))
 	}
 }

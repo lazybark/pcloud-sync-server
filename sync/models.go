@@ -7,58 +7,105 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/lazybark/go-pretty-code/logs"
+	"github.com/lazybark/pcloud-sync-server/fsworker"
 	"gorm.io/gorm"
 )
 
 var (
-	MessageTerminator = byte('\n')
-	ConnectionCloser  = "CLOSE_CONNECTION"
+	MessageTerminator       = byte('\n')
+	MessageTerminatorString = "\n"
+	ConnectionCloser        = "CLOSE_CONNECTION"
 )
 
 type (
+	ConnNotifierEvent struct {
+		Event  fsnotify.Event
+		Object interface{}
+	}
+
 	Server struct {
 		ChannelMutex            sync.RWMutex
-		Config                  *Config
+		Config                  *ConfigServer
 		AppVersion              string
 		Logger                  *logs.Logger
 		Watcher                 *fsnotify.Watcher
 		DB                      *gorm.DB
 		TimeStart               time.Time
-		ConnNotifier            chan (fsnotify.Event)
+		ConnNotifier            chan (ConnNotifierEvent)
 		ActiveConnections       []ActiveConnection
 		ActiveConnectionsNumber int
+		FW                      *fsworker.Fsworker
+	}
+
+	Client struct {
+		AppVersion         string
+		Config             *ConfigClient
+		Logger             *logs.Logger
+		Watcher            *fsnotify.Watcher
+		ConnNotifier       chan (fsnotify.Event)
+		DB                 *gorm.DB
+		TimeStart          time.Time
+		ServerToken        string
+		FW                 *fsworker.Fsworker
+		CurrentToken       string
+		SyncActive         bool
+		FileGetter         chan (GetFile)
+		FilesInRow         []GetFile
+		ActionsBuffer      map[string][]BufferedAction
+		ActionsBufferMutex sync.RWMutex
+	}
+
+	BufferedAction struct {
+		Action    fsnotify.Op
+		Skipped   bool
+		Timestamp time.Time
+	}
+
+	GetFile struct {
+		Name      string
+		Path      string
+		Hash      string
+		UpdatedAt time.Time
 	}
 
 	ConfigClient struct {
-		Login         string
-		Password      string
-		Token         string
-		ServerAddress string
-		ServerPort    int
-		DeviceName    string
-		UserName      string
-		DeviceLabel   string
+		Login              string `mapstructure:"LOGIN"`
+		Password           string `mapstructure:"PASSWORD"`
+		ServerCert         string `mapstructure:"CERT_PATH"`
+		Token              string `mapstructure:"TOKEN"`
+		ServerAddress      string `mapstructure:"SERVER_ADDRESS"`
+		LogDirMain         string `mapstructure:"LOG_DIR_MAIN"`
+		ServerPort         int    `mapstructure:"SERVER_PORT"`
+		DeviceName         string `mapstructure:"DEVICE_NAME"`
+		UserName           string `mapstructure:"USER_NAME"`
+		DeviceLabel        string `mapstructure:"DEVICE_LABEL"`
+		FileSystemRootPath string `mapstructure:"FILE_SYSTEM_ROOT_PATH"`
+		SQLiteDBName       string `mapstructure:"SQLITE_DB_NAME"`
 	}
 
 	ActiveConnection struct {
-		EventsChan     chan (fsnotify.Event)
+		EventsChan     chan (ConnNotifierEvent)
 		Active         bool
 		IP             net.Addr
 		DeviceName     string
+		BytesSent      int
+		BytesRecieved  int
 		ClientErrors   uint
 		ServerErrors   uint
 		NumerInPool    int
+		Token          string
 		ConnectAt      time.Time
 		LastOperation  time.Time
 		DisconnectedAt time.Time
 		StateChan      chan (ConnectionEvent) // Channel for closing the sync routine
 		SyncActive     bool                   // If the client has been authed and has an active sync messages channel
+
 	}
 
 	ConnectionEvent int
 
 	// Config is a struct to define server behaviour
-	Config struct {
+	ConfigServer struct {
 		ServerToken              string `mapstructure:"SERVER_TOKEN"`
 		CertPath                 string `mapstructure:"CERT_PATH"`
 		KeyPath                  string `mapstructure:"KEY_PATH"`
@@ -76,37 +123,8 @@ type (
 		LogDirMain               string `mapstructure:"LOG_DIR_MAIN"`
 		FileSystemRootPath       string `mapstructure:"FILE_SYSTEM_ROOT_PATH"`
 		SQLiteDBName             string `mapstructure:"SQLITE_DB_NAME"`
-	}
-
-	// File represents file data (except it's bytes) to exchange current sync status information
-	File struct {
-		ID            uint `gorm:"primaryKey"`
-		Hash          string
-		Name          string `gorm:"uniqueIndex:file"`
-		Path          string `gorm:"uniqueIndex:file"`
-		Owner         uint
-		Size          int64
-		FSUpdatedAt   time.Time
-		CreatedAt     time.Time
-		UpdatedAt     time.Time
-		CurrentStatus string
-		LocationDirId int
-		Type          string
-	}
-
-	// Folder represents folder data to exchange current sync status information
-	Folder struct {
-		ID            uint   `gorm:"primaryKey"`
-		Name          string `gorm:"uniqueIndex:folder"`
-		Path          string `gorm:"uniqueIndex:folder"`
-		Owner         uint
-		FSUpdatedAt   time.Time
-		CreatedAt     time.Time
-		UpdatedAt     time.Time
-		CurrentStatus string
-		LocationDirId int
-		Items         int
-		Size          int64
+		ServerName               string `mapstructure:"SERVER_NAME"`
+		MaxConnectionsPerUser    int    `mapstructure:"MAX_USER_CONNECTIONS_PER_USER"`
 	}
 )
 

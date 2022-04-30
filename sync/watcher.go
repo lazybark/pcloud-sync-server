@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lazybark/go-helpers/hasher"
+	"github.com/lazybark/pcloud-sync-server/fsworker"
 	"gorm.io/gorm"
 )
 
@@ -23,13 +25,8 @@ func (s *Server) FilesystemWatcherRoutine() {
 					return
 				}
 
-				select {
-				case s.ConnNotifier <- event:
-					if s.Config.FilesystemVerboseLogging {
-						s.Logger.Info(fmt.Sprintf("%s %s", event.Name, event.Op))
-					}
-				default:
-
+				notifyEvent := ConnNotifierEvent{
+					Event: event,
 				}
 
 				// Pause before processing actions to make sure that target isn't locked
@@ -51,16 +48,50 @@ func (s *Server) FilesystemWatcherRoutine() {
 						s.Logger.Info(fmt.Sprintf("%s added to watcher", event.Name))
 
 						// Scan dir
-						err = s.ProcessDirectory(event.Name)
+						err = s.FW.ProcessDirectory(event.Name)
 						if err != nil {
 							s.Logger.Error(fmt.Sprintf("Error processing %s: ", event.Name), err)
 						}
+
+						dir, _ := filepath.Split(event.Name)
+						dir = strings.TrimSuffix(dir, string(filepath.Separator))
+
+						notifyEvent.Object = fsworker.Folder{
+							Name:        dat.Name(),
+							FSUpdatedAt: dat.ModTime(),
+							Path:        s.FW.EscapeAddress(dir),
+						}
+					} else {
+						dir, _ := filepath.Split(event.Name)
+						dir = strings.TrimSuffix(dir, string(filepath.Separator))
+
+						hash, err := hasher.HashFilePath(event.Name, hasher.SHA256, 8192)
+						if err != nil {
+							s.Logger.Error(err)
+						}
+
+						notifyEvent.Object = fsworker.File{
+							Name:        dat.Name(),
+							FSUpdatedAt: dat.ModTime(),
+							Path:        s.FW.EscapeAddress(dir),
+							Hash:        hash,
+						}
 					}
 					// Add object to DB
-					err = s.MakeDBRecord(dat, event.Name)
+					err = s.FW.MakeDBRecord(dat, event.Name)
 					if err != nil && err.Error() != "UNIQUE constraint failed: sync_files.name, sync_files.path" {
 						s.Logger.Error(fmt.Sprintf("Error making record for %s: ", event.Name), err)
 					}
+
+					select {
+					case s.ConnNotifier <- notifyEvent:
+						if s.Config.FilesystemVerboseLogging {
+							s.Logger.Info(fmt.Sprintf("%s %s", event.Name, event.Op))
+						}
+					default:
+
+					}
+
 				} else if event.Op.String() == "WRITE" {
 					dir, child := filepath.Split(event.Name)
 					dir = strings.TrimSuffix(dir, string(filepath.Separator))
@@ -70,9 +101,9 @@ func (s *Server) FilesystemWatcherRoutine() {
 						break
 					}
 					if dat.IsDir() {
-						var folder Folder
+						var folder fsworker.Folder
 
-						if err := s.DB.Where("name = ? and path = ?", child, s.EscapeAddress(dir)).First(&folder).Error; err != nil {
+						if err := s.DB.Where("name = ? and path = ?", child, s.FW.EscapeAddress(dir)).First(&folder).Error; err != nil {
 							s.Logger.Error("File reading failed: ", err)
 						} else {
 							// Update data in DB
@@ -81,14 +112,24 @@ func (s *Server) FilesystemWatcherRoutine() {
 								s.Logger.Error("Dir saving failed: ", err)
 							}
 						}
+
+						notifyEvent.Object = folder
+						select {
+						case s.ConnNotifier <- notifyEvent:
+							if s.Config.FilesystemVerboseLogging {
+								s.Logger.Info(fmt.Sprintf("%s %s", event.Name, event.Op))
+							}
+						default:
+
+						}
 					} else {
-						var file File
-						if err := s.DB.Where("name = ? and path = ?", child, s.EscapeAddress(dir)).First(&file).Error; err != nil {
+						var file fsworker.File
+						if err := s.DB.Where("name = ? and path = ?", child, s.FW.EscapeAddress(dir)).First(&file).Error; err != nil {
 							s.Logger.Error("File reading failed: ", err)
 						} else {
 							// Update data in DB
 							hash := ""
-							hash, err := s.FileHash(event.Name)
+							hash, err := hasher.HashFilePath(event.Name, hasher.SHA256, 8192)
 							if err != nil {
 								s.Logger.Error(err)
 							}
@@ -96,18 +137,28 @@ func (s *Server) FilesystemWatcherRoutine() {
 							file.Size = dat.Size()
 							file.Hash = hash
 							if err := s.DB.Table("files").Save(&file).Error; err != nil && err != gorm.ErrEmptySlice {
-								s.Logger.Error("Dir saving failed: ", err)
+								s.Logger.Error("File saving failed: ", err)
 							}
+
+						}
+						notifyEvent.Object = file
+						select {
+						case s.ConnNotifier <- notifyEvent:
+							if s.Config.FilesystemVerboseLogging {
+								s.Logger.Info(fmt.Sprintf("%s %s", event.Name, event.Op))
+							}
+						default:
+
 						}
 					}
 				} else if event.Op.String() == "REMOVE" || event.Op.String() == "RENAME" { //no difference for DB between deletion and renaming
-					var file File
-					var folder Folder
+					var file fsworker.File
+					var folder fsworker.Folder
 
 					dir, child := filepath.Split(event.Name)
 					dir = strings.TrimSuffix(dir, string(filepath.Separator))
 
-					err := s.DB.Where("name = ? and path = ?", child, s.EscapeAddress(dir)).First(&file).Error
+					err := s.DB.Where("name = ? and path = ?", child, s.FW.EscapeAddress(dir)).First(&file).Error
 					if err != nil && err != gorm.ErrRecordNotFound {
 						s.Logger.Error(err)
 					}
@@ -117,10 +168,20 @@ func (s *Server) FilesystemWatcherRoutine() {
 						if err != nil {
 							s.Logger.Error(err)
 						}
+						notifyEvent.Object = file
+
+						select {
+						case s.ConnNotifier <- notifyEvent:
+							if s.Config.FilesystemVerboseLogging {
+								s.Logger.Info(fmt.Sprintf("%s %s", event.Name, event.Op))
+							}
+						default:
+
+						}
 						break
 					}
 
-					err = s.DB.Where("name = ? and path = ?", child, s.EscapeAddress(dir)).First(&folder).Error
+					err = s.DB.Where("name = ? and path = ?", child, s.FW.EscapeAddress(dir)).First(&folder).Error
 					if err != nil && err != gorm.ErrRecordNotFound {
 						s.Logger.Error(err)
 					}
@@ -131,18 +192,22 @@ func (s *Server) FilesystemWatcherRoutine() {
 							s.Logger.Error(err)
 						}
 						// Manually delete all files connected to this dir
-						err = s.DB.Where("path = ?", s.EscapeAddress(event.Name)).Delete(&file).Error
+						err = s.DB.Where("path = ?", s.FW.EscapeAddress(event.Name)).Delete(&file).Error
 						if err != nil {
 							s.Logger.Error(err)
 						}
 
-						// Stop watching this dir
-						/*errWatcher := watch.Remove(event.Name)
-						if errWatcher != nil {
-							logger.Zap.Error("FS watcher delete failed: ", errWatcher)
-						} else {
-							logger.Zap.Info(fmt.Sprintf("%s deleted from watcher", event.Name))
-						}*/
+						folder.Path = s.FW.EscapeAddress(folder.Path)
+						folder.FSUpdatedAt = time.Now()
+						notifyEvent.Object = folder
+						select {
+						case s.ConnNotifier <- notifyEvent:
+							if s.Config.FilesystemVerboseLogging {
+								s.Logger.Info(fmt.Sprintf("%s %s", event.Name, event.Op))
+							}
+						default:
+
+						}
 
 						break
 					}
