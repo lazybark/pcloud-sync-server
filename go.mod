@@ -13,7 +13,7 @@ require (
 	gorm.io/gorm v1.23.4
 )
 
-require github.com/gofrs/uuid v4.2.0+incompatible // indirect
+require github.com/gofrs/uuid v4.2.0+incompatible
 
 require (
 	github.com/hashicorp/hcl v1.0.0 // indirect

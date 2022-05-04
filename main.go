@@ -1,7 +1,11 @@
 package main
 
 import (
-	"github.com/lazybark/pcloud-sync-server/sync"
+	"bufio"
+	"fmt"
+	"os"
+
+	"github.com/lazybark/pcloud-sync-server/cloud/server"
 )
 
 func main() {
@@ -18,6 +22,8 @@ func main() {
 
 	// Как ускорить работу с массивами?
 
+	//Сервис, на который сервера могут манифестировать свой ип. Для домашнего использования. Например: ты генеришь там токен, и сервер используя его отправляет туда каждый раз свой новый IP, а юзер откуда-то его узнает и использует, чтобы приконнектиться к домашнему серверу. Либо у меня сервачок, который выдает тебе адрес и захлодя на него, ты попадаешь на свой домашний сервер
+
 	//Mode в конфиге решает, в каком режиме будет работать сервер
 	// SERVER - regular main server, MIRROR - server that just gets and stores current structure
 	// ENDPOINT - server that does not store data - just passes on fs-events
@@ -32,6 +38,8 @@ func main() {
 	//--stats
 	//-c use colorful output in console (true by default)
 
+	// add close for all channels in listener!!!
+
 	//Сервер отсылает обратно свой конфиг: макс число одновременных коннектов, макс размер файла
 	//Макс соединений не может быть меньше 2 (одно для информации, другое для отправки/приема файлов)
 
@@ -41,6 +49,8 @@ func main() {
 
 	// Duplicate servers to avoid data loss
 	// Data archiving and file versioning
+
+	// При старте писать, сколько файлов обрабатывается в файловой системе
 
 	// Client sends DeviceName
 
@@ -70,12 +80,41 @@ func main() {
 
 	// Что очищать после закрытия сервера?
 
+	// Допилить возобновление скачивания файла в случае обрыва соединения
+
 	// Рутина, котоарая чистит устаревшие соединения
 
-	server := sync.NewSyncServer()
-	defer server.Watcher.Close()
-	go server.InterruptCatcher()
-	server.Start()
+	// Uint vs int
+
+	// Возможность удаленно тормознуть сервер командой. Закрывается через канал serverDone в методе Stop()
+
+	// Программа поиска самых больишх файлов
+	// Одинаковых файлов
+	// Файлы и папки исключенные из синка или привязанные к устройствам
+
+	// Запуск по расписанию для синхронизации бекапов
+	// Бекап-сервер
+
+	server := server.NewServer()
+	started := make(chan bool)
+	go server.Start(started)
+
+	<-started
+	for {
+		fmt.Println("Type command to server or 'h' for help:")
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Scan()
+		c := scanner.Text()
+		if c == "h" || c == "help" {
+			fmt.Println(server.PrintHelp())
+		} else if c == "v" || c == "ver" || c == "version" {
+			fmt.Println(server.PrintStatistics())
+		} else if c == "stat" || c == "stats" || c == "statistic" {
+			fmt.Println(server.PrintVersion())
+		} else if c == "status" {
+			fmt.Println(server.PrintStatus())
+		}
+	}
 
 	//users.CreateUserCLI(sqlite)
 
